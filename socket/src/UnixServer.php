@@ -24,7 +24,9 @@ final class UnixServer extends EventEmitter implements ServerInterface
 {
     private $master;
     private $loop;
-    private $listening = false;
+    private $listening 			= false;
+	private $sockSystem 		= false;
+	private $forceSocketSys 	= false;
 
     /**
      * Creates a plaintext socket server and starts listening on the given unix socket
@@ -43,27 +45,44 @@ final class UnixServer extends EventEmitter implements ServerInterface
      * @throws InvalidArgumentException if the listening address is invalid
      * @throws RuntimeException if listening on this address fails (already in use etc.)
      */
-    public function __construct($path, LoopInterface $loop, array $context = array())
+    public function __construct($path, LoopInterface $loop, array $context = array(), $unixType = "stream", $forceSocket = false)
     {
         $this->loop = $loop;
-
-        if (\strpos($path, '://') === false) {
-            $path = 'unix://' . $path;
-        } elseif (\substr($path, 0, 7) !== 'unix://') {
-            throw new \InvalidArgumentException('Given URI "' . $path . '" is invalid');
-        }
-
-        $this->master = @\stream_socket_server(
-            $path,
-            $errno,
-            $errstr,
-            \STREAM_SERVER_BIND | \STREAM_SERVER_LISTEN,
-            \stream_context_create(array('socket' => $context))
-        );
+		
+		$this->sockSystem = ($unixType == "dgram") OR $forceSocket;
+		$this->forceSocketSys = $forceSocket;
+		
+		if($unixType == "stream" && !$forceSocket){
+			if (\strpos($path, '://') === false) {
+				$path = 'unix://' . $path;
+			} elseif (\substr($path, 0, 7) !== 'unix://') {
+				throw new \InvalidArgumentException('Given URI "' . $path . '" is invalid');
+			}
+		
+			$this->master = @\stream_socket_server(
+				$path,
+				$errno,
+				$errstr,
+				\STREAM_SERVER_BIND | \STREAM_SERVER_LISTEN,
+				\stream_context_create(array('socket' => $context))
+			);
+		} else if($unixType == "stream" && $forceSocket){
+			$path = substr($path, 7);
+			$this->master = @\socket_create(AF_UNIX, SOCK_STREAM, 0);
+			socket_bind($this->master, $path);
+			socket_set_option($this->master, SOL_SOCKET, SO_REUSEADDR, 100);
+			socket_listen($this->master);
+		} else if($unixType == "dgram"){
+			$path = substr($path, 7);
+			$this->master = @\socket_create(AF_UNIX, SOCK_DGRAM, 0);
+			socket_bind($this->master, $path);
+		}
+		
         if (false === $this->master) {
             // PHP does not seem to report errno/errstr for Unix domain sockets (UDS) right now.
             // This only applies to UDS server sockets, see also https://3v4l.org/NAhpr.
             // Parse PHP warning message containing unknown error, HHVM reports proper info at least.
+			// Adicionalmente colocar socket_strerror(socket_last_error($socket));
             if ($errno === 0 && $errstr === '') {
                 $error = \error_get_last();
                 if (\preg_match('/\(([^\)]+)\)|\[(\d+)\]: (.*)/', $error['message'], $match)) {
@@ -74,8 +93,12 @@ final class UnixServer extends EventEmitter implements ServerInterface
 
             throw new \RuntimeException('Failed to listen on Unix domain socket "' . $path . '": ' . $errstr, $errno);
         }
-        \stream_set_blocking($this->master, 0);
-
+		if($unixType == "stream" && !$forceSocket){
+			\stream_set_blocking($this->master, 0);
+		} else if($unixType == "dgram" || $forceSocket){
+			socket_set_nonblock($this->master);
+		}
+		
         $this->resume();
     }
 
@@ -84,8 +107,14 @@ final class UnixServer extends EventEmitter implements ServerInterface
         if (!\is_resource($this->master)) {
             return null;
         }
-
-        return 'unix://' . \stream_socket_get_name($this->master, false);
+		if($this->sockSystem){
+			$IP = null;
+			$PORT = null;
+			socket_getsockname($this->master, $IP, $PORT);
+			return 'unix://' . $IP . ':' . $PORT;
+		} else {
+			return 'unix://' . \stream_socket_get_name($this->master, false);
+		}
     }
 
     public function pause()
@@ -94,27 +123,53 @@ final class UnixServer extends EventEmitter implements ServerInterface
             return;
         }
 
-        $this->loop->removeReadStream($this->master);
+		if($this->sockSystem){
+			$this->loop->removeReadSocket($this->master);
+		} else {
+			$this->loop->removeReadStream($this->master);
+		}
         $this->listening = false;
     }
 
     public function resume()
     {
+
         if ($this->listening || !is_resource($this->master)) {
             return;
         }
 
-        $that = $this;
-        $this->loop->addReadStream($this->master, function ($master) use ($that) {
-            $newSocket = @\stream_socket_accept($master);
-            if (false === $newSocket) {
-                $that->emit('error', array(new \RuntimeException('Error accepting new connection')));
+		if(\get_resource_type($this->master) === "stream" && !$this->forceSocketSys){
+			$that = $this;
+			$this->loop->addReadStream($this->master, function ($master) use ($that) {
+				$newSocket = @\stream_socket_accept($master);
+				if (false === $newSocket) {
+					$that->emit('error', array(new \RuntimeException('Error accepting new connection')));
 
-                return;
-            }
-            $that->handleConnection($newSocket);
-        });
-        $this->listening = true;
+					return;
+				}
+				$that->handleConnection($newSocket);
+			});
+			$this->listening = true;
+		} else if(\get_resource_type($this->master) === "Socket" && $this->forceSocketSys){
+			$that = $this;
+			$this->loop->addReadSocket($this->master, function ($master) use ($that) {
+				$newSocket = socket_accept($master);
+				if (false === $newSocket) {
+					$that->emit('error', array(new \RuntimeException('Error accepting new connection')));
+
+					return;
+				}
+				$that->handleConnection($newSocket, true);
+			});
+			$this->listening = true;
+		} else {
+			$that = $this;
+			$this->loop->addReadSocket($this->master, function ($master) use ($that) {
+				// Do nothing
+			});
+			$this->listening = true;
+		}
+
     }
 
     public function close()
@@ -129,9 +184,9 @@ final class UnixServer extends EventEmitter implements ServerInterface
     }
 
     /** @internal */
-    public function handleConnection($socket)
+    public function handleConnection($socket, $socket_accept = false)
     {
-        $connection = new Connection($socket, $this->loop);
+        $connection = new Connection($socket, $this->loop, $this->forceSocketSys, $socket_accept);
         $connection->unix = true;
 
         $this->emit('connection', array(

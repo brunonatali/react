@@ -14,7 +14,6 @@ for [ReactPHP](https://reactphp.org/).
   * [unwrapReadable()](#unwrapreadable)
   * [unwrapWritable()](#unwrapwritable)
 * [Install](#install)
-* [Tests](#tests)
 * [License](#license)
 
 ## Usage
@@ -34,12 +33,15 @@ Alternatively, you can also refer to them with their fully-qualified name:
 
 ```php
 \React\Promise\Stream\buffer(…);
-```
+``` 
 
 ### buffer()
 
-The `buffer(ReadableStreamInterface<string> $stream, ?int $maxLength = null): PromiseInterface<string,Exception>` function can be used to
-create a `Promise` which resolves with the stream data buffer.
+The `buffer(ReadableStreamInterface $stream, int $maxLength = null)` function can be used to create
+a `Promise` which resolves with the stream data buffer. With an optional maximum length argument 
+which defaults to no limit. In case the maximum length is reached before the end the promise will 
+be rejected with a `\OverflowException`.
+ 
 
 ```php
 $stream = accessSomeJsonStream();
@@ -55,11 +57,7 @@ The promise will resolve with an empty string if the stream is already closed.
 
 The promise will reject if the stream emits an error.
 
-The promise will reject if it is cancelled.
-
-The optional `$maxLength` argument defaults to no limit. In case the maximum
-length is given and the stream emits more data before the end, the promise
-will be rejected with an `\OverflowException`.
+The promise will reject if it is canceled.
 
 ```php
 $stream = accessSomeToLargeStream();
@@ -69,14 +67,14 @@ Stream\buffer($stream, 1024)->then(function ($contents) {
 }, function ($error) {
     // Reaching here when the stream buffer goes above the max size,
     // in this example that is 1024 bytes,
-    // or when the stream emits an error.
+    // or when the stream emits an error. 
 });
 ```
 
 ### first()
 
-The `first(ReadableStreamInterface|WritableStreamInterface $stream, string $event = 'data'): PromiseInterface<mixed,Exception>` function can be used to
-create a `Promise` which resolves once the given event triggers for the first time.
+The `first(ReadableStreamInterface|WritableStreamInterface $stream, $event = 'data')`
+function can be used to create a `Promise` which resolves once the given event triggers for the first time.
 
 ```php
 $stream = accessSomeJsonStream();
@@ -99,12 +97,12 @@ The promise will reject once the stream closes – unless you're waiting for the
 
 The promise will reject if the stream is already closed.
 
-The promise will reject if it is cancelled.
+The promise will reject if it is canceled.
 
 ### all()
 
-The `all(ReadableStreamInterface|WritableStreamInterface $stream, string $event = 'data'): PromiseInterface<array,Exception>` function can be used to
-create a `Promise` which resolves with an array of all the event data.
+The `all(ReadableStreamInterface|WritableStreamInterface $stream, $event = 'data')`
+function can be used to create a `Promise` which resolves with an array of all the event data.
 
 ```php
 $stream = accessSomeJsonStream();
@@ -125,12 +123,12 @@ The promise will resolve with an empty array if the stream is already closed.
 
 The promise will reject if the stream emits an error.
 
-The promise will reject if it is cancelled.
+The promise will reject if it is canceled.
 
 ### unwrapReadable()
 
-The `unwrapReadable(PromiseInterface<ReadableStreamInterface,Exception> $promise): ReadableStreamInterface` function can be used to
-unwrap a `Promise` which resolves with a `ReadableStreamInterface`.
+The `unwrapReadable(PromiseInterface $promise)` function can be used to unwrap
+a `Promise` which resolves with a `ReadableStreamInterface`.
 
 This function returns a readable stream instance (implementing `ReadableStreamInterface`)
 right away which acts as a proxy for the future promise resolution.
@@ -144,11 +142,11 @@ $promise = startDownloadStream($uri);
 $stream = Stream\unwrapReadable($promise);
 
 $stream->on('data', function ($data) {
-    echo $data;
+   echo $data;
 });
 
 $stream->on('end', function () {
-    echo 'DONE';
+   echo 'DONE';
 });
 ```
 
@@ -187,14 +185,13 @@ $loop->addTimer(2.0, function () use ($stream) {
 
 ### unwrapWritable()
 
-The `unwrapWritable(PromiseInterface<WritableStreamInterface,Exception> $promise): WritableStreamInterface` function can be used to
-unwrap a `Promise` which resolves with a `WritableStreamInterface`.
+The `unwrapWritable(PromiseInterface $promise)` function can be used to unwrap
+a `Promise` which resolves with a `WritableStreamInterface`.
 
 This function returns a writable stream instance (implementing `WritableStreamInterface`)
 right away which acts as a proxy for the future promise resolution.
-Any writes to this instance will be buffered in memory for when the promise resolves.
 Once the given Promise resolves with a `WritableStreamInterface`, any data you
-have written to the proxy will be forwarded transparently to the inner stream.
+wrote to the proxy will be piped to the inner stream.
 
 ```php
 //$promise = someFunctionWhichResolvesWithAStream();
@@ -206,7 +203,7 @@ $stream->write('hello');
 $stream->end('world');
 
 $stream->on('close', function () {
-    echo 'DONE';
+   echo 'DONE';
 });
 ```
 
@@ -248,11 +245,11 @@ $loop->addTimer(2.0, function () use ($stream) {
 The recommended way to install this library is [through Composer](https://getcomposer.org).
 [New to Composer?](https://getcomposer.org/doc/00-intro.md)
 
-This project follows [SemVer](https://semver.org/).
+This project follows [SemVer](http://semver.org/).
 This will install the latest supported version:
 
 ```bash
-$ composer require react/promise-stream:^1.2
+$ composer require react/promise-stream:^1.1.1
 ```
 
 See also the [CHANGELOG](CHANGELOG.md) for details about version upgrades.
@@ -261,21 +258,6 @@ This project aims to run on any platform and thus does not require any PHP
 extensions and supports running on legacy PHP 5.3 through current PHP 7+ and
 HHVM.
 It's *highly recommended to use PHP 7+* for this project.
-
-## Tests
-
-To run the test suite, you first need to clone this repo and then install all
-dependencies [through Composer](https://getcomposer.org):
-
-```bash
-$ composer install
-```
-
-To run the test suite, go to the project root and run:
-
-```bash
-$ php vendor/bin/phpunit
-```
 
 ## License
 

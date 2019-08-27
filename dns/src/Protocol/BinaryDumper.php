@@ -2,11 +2,11 @@
 
 namespace React\Dns\Protocol;
 
+use React\Dns\Model\HeaderBag;
 use React\Dns\Model\Message;
 use React\Dns\Model\Record;
-use React\Dns\Query\Query;
 
-final class BinaryDumper
+class BinaryDumper
 {
     /**
      * @param Message $message
@@ -16,7 +16,7 @@ final class BinaryDumper
     {
         $data = '';
 
-        $data .= $this->headerToBinary($message);
+        $data .= $this->headerToBinary($message->header);
         $data .= $this->questionToBinary($message->questions);
         $data .= $this->recordsToBinary($message->answers);
         $data .= $this->recordsToBinary($message->authority);
@@ -26,37 +26,37 @@ final class BinaryDumper
     }
 
     /**
-     * @param Message $message
+     * @param HeaderBag $header
      * @return string
      */
-    private function headerToBinary(Message $message)
+    private function headerToBinary(HeaderBag $header)
     {
         $data = '';
 
-        $data .= pack('n', $message->id);
+        $data .= pack('n', $header->get('id'));
 
         $flags = 0x00;
-        $flags = ($flags << 1) | ($message->qr ? 1 : 0);
-        $flags = ($flags << 4) | $message->opcode;
-        $flags = ($flags << 1) | ($message->aa ? 1 : 0);
-        $flags = ($flags << 1) | ($message->tc ? 1 : 0);
-        $flags = ($flags << 1) | ($message->rd ? 1 : 0);
-        $flags = ($flags << 1) | ($message->ra ? 1 : 0);
-        $flags = ($flags << 3) | 0; // skip unused zero bit
-        $flags = ($flags << 4) | $message->rcode;
+        $flags = ($flags << 1) | $header->get('qr');
+        $flags = ($flags << 4) | $header->get('opcode');
+        $flags = ($flags << 1) | $header->get('aa');
+        $flags = ($flags << 1) | $header->get('tc');
+        $flags = ($flags << 1) | $header->get('rd');
+        $flags = ($flags << 1) | $header->get('ra');
+        $flags = ($flags << 3) | $header->get('z');
+        $flags = ($flags << 4) | $header->get('rcode');
 
         $data .= pack('n', $flags);
 
-        $data .= pack('n', count($message->questions));
-        $data .= pack('n', count($message->answers));
-        $data .= pack('n', count($message->authority));
-        $data .= pack('n', count($message->additional));
+        $data .= pack('n', $header->get('qdCount'));
+        $data .= pack('n', $header->get('anCount'));
+        $data .= pack('n', $header->get('nsCount'));
+        $data .= pack('n', $header->get('arCount'));
 
         return $data;
     }
 
     /**
-     * @param Query[] $questions
+     * @param array $questions
      * @return string
      */
     private function questionToBinary(array $questions)
@@ -64,8 +64,8 @@ final class BinaryDumper
         $data = '';
 
         foreach ($questions as $question) {
-            $data .= $this->domainNameToBinary($question->name);
-            $data .= pack('n*', $question->type, $question->class);
+            $data .= $this->domainNameToBinary($question['name']);
+            $data .= pack('n*', $question['type'], $question['class']);
         }
 
         return $data;
@@ -122,23 +122,6 @@ final class BinaryDumper
                         $record->data['minimum']
                     );
                     break;
-                case Message::TYPE_CAA:
-                    $binary = \pack(
-                        'C*',
-                        $record->data['flag'],
-                        \strlen($record->data['tag'])
-                    );
-                    $binary .= $record->data['tag'];
-                    $binary .= $record->data['value'];
-                    break;
-                case Message::TYPE_SSHFP:
-                    $binary = \pack(
-                        'CCH*',
-                        $record->data['algorithm'],
-                        $record->data['type'],
-                        $record->data['fingerprint']
-                    );
-                    break;
                 default:
                     // RDATA is already stored as binary value for unknown record types
                     $binary = $record->data;
@@ -175,15 +158,6 @@ final class BinaryDumper
             return "\0";
         }
 
-        // break up domain name at each dot that is not preceeded by a backslash (escaped notation)
-        return $this->textsToBinary(
-            \array_map(
-                'stripcslashes',
-                \preg_split(
-                    '/(?<!\\\\)\./',
-                    $host . '.'
-                )
-            )
-        );
+        return $this->textsToBinary(\explode('.', $host . '.'));
     }
 }

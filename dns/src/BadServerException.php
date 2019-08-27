@@ -2,6 +2,6 @@
 
 namespace React\Dns;
 
-final class BadServerException extends \Exception
+class BadServerException extends \Exception
 {
 }

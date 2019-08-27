@@ -10,6 +10,8 @@ final class DuplexResourceStream extends EventEmitter implements DuplexStreamInt
 {
     private $stream;
     private $loop;
+    private $socketSystem;
+    private $socketProtocol;
 
     /**
      * Controls the maximum buffer size in bytes to read at once from the stream.
@@ -35,38 +37,54 @@ final class DuplexResourceStream extends EventEmitter implements DuplexStreamInt
     private $closing = false;
     private $listening = false;
 
-    public function __construct($stream, LoopInterface $loop, $readChunkSize = null, WritableStreamInterface $buffer = null)
+	private $remoteAddr = null;
+	private $remotePort = null;
+
+    public function __construct($stream, LoopInterface $loop, $readChunkSize = null, WritableStreamInterface $buffer = null, $socketSystem = false)
     {
-        if (!\is_resource($stream) || \get_resource_type($stream) !== "stream") {
+        if (!\is_resource($stream) || ((\get_resource_type($stream) !== "stream") AND !$socketSystem)) {
              throw new InvalidArgumentException('First parameter must be a valid stream resource');
         }
 
-        // ensure resource is opened for reading and wrting (fopen mode must contain "+")
-        $meta = \stream_get_meta_data($stream);
-        if (isset($meta['mode']) && $meta['mode'] !== '' && \strpos($meta['mode'], '+') === false) {
-            throw new InvalidArgumentException('Given stream resource is not opened in read and write mode');
-        }
+		$this->socketSystem = $socketSystem;
 
-        // this class relies on non-blocking I/O in order to not interrupt the event loop
-        // e.g. pipes on Windows do not support this: https://bugs.php.net/bug.php?id=47918
-        if (\stream_set_blocking($stream, 0) !== true) {
-            throw new \RuntimeException('Unable to set stream resource to non-blocking mode');
-        }
+		if($socketSystem){
+			if (\socket_set_nonblock($stream) !== true) {
+				throw new \RuntimeException('Unable to set socket resource to non-blocking mode');
+			}
+			// if need to empty buffer, implement this
+			//$bytes = socket_recvfrom($serv, $buf, 1024, 0, $addr, $port);
+			
+			
+			$this->socketProtocol = socket_getopt($stream ,SOL_SOCKET, SO_TYPE);
+		} else {
+			// ensure resource is opened for reading and wrting (fopen mode must contain "+")
+			$meta = \stream_get_meta_data($stream);
+			if (isset($meta['mode']) && $meta['mode'] !== '' && \strpos($meta['mode'], '+') === false) {
+				throw new InvalidArgumentException('Given stream resource is not opened in read and write mode');
+			}
 
-        // Use unbuffered read operations on the underlying stream resource.
-        // Reading chunks from the stream may otherwise leave unread bytes in
-        // PHP's stream buffers which some event loop implementations do not
-        // trigger events on (edge triggered).
-        // This does not affect the default event loop implementation (level
-        // triggered), so we can ignore platforms not supporting this (HHVM).
-        // Pipe streams (such as STDIN) do not seem to require this and legacy
-        // PHP versions cause SEGFAULTs on unbuffered pipe streams, so skip this.
-        if (\function_exists('stream_set_read_buffer') && !$this->isLegacyPipe($stream)) {
-            \stream_set_read_buffer($stream, 0);
-        }
+			// this class relies on non-blocking I/O in order to not interrupt the event loop
+			// e.g. pipes on Windows do not support this: https://bugs.php.net/bug.php?id=47918
+			if (\stream_set_blocking($stream, 0) !== true) {
+				throw new \RuntimeException('Unable to set stream resource to non-blocking mode');
+			}
+
+			// Use unbuffered read operations on the underlying stream resource.
+			// Reading chunks from the stream may otherwise leave unread bytes in
+			// PHP's stream buffers which some event loop implementations do not
+			// trigger events on (edge triggered).
+			// This does not affect the default event loop implementation (level
+			// triggered), so we can ignore platforms not supporting this (HHVM).
+			// Pipe streams (such as STDIN) do not seem to require this and legacy
+			// PHP versions cause SEGFAULTs on unbuffered pipe streams, so skip this.
+			if (\function_exists('stream_set_read_buffer') && !$this->isLegacyPipe($stream)) {
+				\stream_set_read_buffer($stream, 0);
+			}
+		}
 
         if ($buffer === null) {
-            $buffer = new WritableResourceStream($stream, $loop);
+            $buffer = new WritableResourceStream($stream, $loop, null, null, $socketSystem);
         }
 
         $this->stream = $stream;
@@ -102,7 +120,11 @@ final class DuplexResourceStream extends EventEmitter implements DuplexStreamInt
     public function pause()
     {
         if ($this->listening) {
-            $this->loop->removeReadStream($this->stream);
+			if($this->socketSystem){
+				$this->loop->removeReadSocket($this->stream);
+			} else {
+				$this->loop->removeReadStream($this->stream);
+			}
             $this->listening = false;
         }
     }
@@ -110,18 +132,22 @@ final class DuplexResourceStream extends EventEmitter implements DuplexStreamInt
     public function resume()
     {
         if (!$this->listening && $this->readable) {
-            $this->loop->addReadStream($this->stream, array($this, 'handleData'));
+			if($this->socketSystem){
+				$this->loop->addReadSocket($this->stream, array($this, 'handleData'));
+			} else {
+				$this->loop->addReadStream($this->stream, array($this, 'handleData'));
+			}
             $this->listening = true;
         }
     }
 
-    public function write($data)
+    public function write($data, $ip = null, $port = null)
     {
         if (!$this->writable) {
             return false;
         }
 
-        return $this->buffer->write($data);
+        return $this->buffer->write($data, $ip, $port);
     }
 
     public function close()
@@ -141,9 +167,20 @@ final class DuplexResourceStream extends EventEmitter implements DuplexStreamInt
         $this->removeAllListeners();
 
         if (\is_resource($this->stream)) {
-            \fclose($this->stream);
+			if($this->socketSystem){
+				\socket_close($this->stream);
+			} else {
+				\fclose($this->stream);
+			}
         }
     }
+
+	public function get_remote_addr(&$ip, &$port){
+		if($this->remoteAddr === null && $this->remotePort === null) return false;
+		$ip = $this->remoteAddr;
+		$port = $this->remotePort;
+		 return true;
+	}
 
     public function end($data = null)
     {
@@ -178,8 +215,15 @@ final class DuplexResourceStream extends EventEmitter implements DuplexStreamInt
                 $errline
             );
         });
-
-        $data = \stream_get_contents($stream, $this->bufferSize);
+		
+		if($this->socketSystem){
+			$data = null;
+			while(false !== socket_recvfrom($stream, $message, $this->bufferSize, 0, $this->remoteAddr, $this->remotePort)){
+				$data .= $message;
+			};
+		} else {
+			$data = \stream_get_contents($stream, $this->bufferSize);
+		}
 
         \restore_error_handler();
 
@@ -188,7 +232,6 @@ final class DuplexResourceStream extends EventEmitter implements DuplexStreamInt
             $this->close();
             return;
         }
-
         if ($data !== '') {
             $this->emit('data', array($data));
         } elseif (\feof($this->stream)) {

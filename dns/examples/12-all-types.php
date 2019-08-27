@@ -1,8 +1,5 @@
 <?php
 
-// $ php examples/12-all-types.php
-// $ php examples/12-all-types.php myserverplace.de SSHFP
-
 use React\Dns\Config\Config;
 use React\Dns\Resolver\Factory;
 

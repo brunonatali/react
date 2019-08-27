@@ -57,8 +57,10 @@ final class StreamSelectLoop implements LoopInterface
     private $futureTickQueue;
     private $timers;
     private $readStreams = array();
+    private $readSockets = array();
     private $readListeners = array();
     private $writeStreams = array();
+    private $writeSockets = array();
     private $writeListeners = array();
     private $running;
     private $pcntl = false;
@@ -81,13 +83,27 @@ final class StreamSelectLoop implements LoopInterface
     public function addReadStream($stream, $listener)
     {
         $key = (int) $stream;
-
+		if(count($this->readSockets)){
+            throw new \BadMethodCallException("Already have socket add, 'streams' and 'sockets' could not work toguether. Watch 'StreamSelectLoop'");
+		}
         if (!isset($this->readStreams[$key])) {
             $this->readStreams[$key] = $stream;
             $this->readListeners[$key] = $listener;
         }
     }
 
+    public function addReadSocket($sock, $listener)
+    {
+        $key = (int) $sock;
+		if(count($this->readStreams)){
+            throw new \BadMethodCallException("Already have stream add, 'streams' and 'sockets' could not work toguether. Watch 'StreamSelectLoop'");
+		}
+        if (!isset($this->readSockets[$key])) {
+            $this->readSockets[$key] = $sock;
+            $this->readListeners[$key] = $listener;
+        }
+    }
+	
     public function addWriteStream($stream, $listener)
     {
         $key = (int) $stream;
@@ -98,6 +114,16 @@ final class StreamSelectLoop implements LoopInterface
         }
     }
 
+    public function addWriteSocket($sock, $listener)
+    {
+        $key = (int) $sock;
+		socket_set_nonblock($sock);
+        if (!isset($this->writeSockets[$key])) {
+            $this->writeSockets[$key] = $sock;
+            $this->writeListeners[$key] = $listener;
+        }
+    }
+	
     public function removeReadStream($stream)
     {
         $key = (int) $stream;
@@ -107,7 +133,17 @@ final class StreamSelectLoop implements LoopInterface
             $this->readListeners[$key]
         );
     }
+	
+    public function removeReadSocket($stream)
+    {
+        $key = (int) $stream;
 
+        unset(
+            $this->readSockets[$key],
+            $this->readListeners[$key]
+        );
+    }
+	
     public function removeWriteStream($stream)
     {
         $key = (int) $stream;
@@ -118,6 +154,16 @@ final class StreamSelectLoop implements LoopInterface
         );
     }
 
+    public function removeWriteSocket($stream)
+    {
+        $key = (int) $stream;
+
+        unset(
+            $this->writeSockets[$key],
+            $this->writeListeners[$key]
+        );
+    }
+	
     public function addTimer($interval, $callback)
     {
         $timer = new Timer($interval, $callback, false);
@@ -143,6 +189,7 @@ final class StreamSelectLoop implements LoopInterface
 
     public function futureTick($listener)
     {
+		var_dump($listener);
         $this->futureTickQueue->add($listener);
     }
 
@@ -181,7 +228,6 @@ final class StreamSelectLoop implements LoopInterface
             $this->futureTickQueue->tick();
 
             $this->timers->tick();
-
             // Future-tick queue has pending callbacks ...
             if (!$this->running || !$this->futureTickQueue->isEmpty()) {
                 $timeout = 0;
@@ -200,7 +246,8 @@ final class StreamSelectLoop implements LoopInterface
                 }
 
             // The only possible event is stream or signal activity, so wait forever ...
-            } elseif ($this->readStreams || $this->writeStreams || !$this->signals->isEmpty()) {
+            } elseif ($this->readStreams || $this->readSockets || $this->writeStreams || $this->writeSockets || 
+					 !$this->signals->isEmpty()) {
                 $timeout = null;
 
             // There's nothing left to do ...
@@ -224,22 +271,25 @@ final class StreamSelectLoop implements LoopInterface
      */
     private function waitForStreamActivity($timeout)
     {
-        $read  = $this->readStreams;
-        $write = $this->writeStreams;
-
-        $available = $this->streamSelect($read, $write, $timeout);
+		if((count($this->readSockets) != 0 || count($this->writeSockets) != 0) AND 
+		   (count($this->readStreams) == 0 && count($this->writeStreams) == 0)) {
+			$read  = $this->readSockets;
+			$write = $this->writeSockets;
+			$available = $this->socketSelect($read, $write, $timeout);
+		} else {
+			$read  = $this->readStreams;
+			$write = $this->writeStreams;
+			$available = $this->streamSelect($read, $write, $timeout);
+		}
+        
         if ($this->pcntlActive) {
             \pcntl_signal_dispatch();
         }
         if (false === $available) {
-            // if a system call has been interrupted,
-            // we cannot rely on it's outcome
             return;
         }
-
         foreach ($read as $stream) {
             $key = (int) $stream;
-
             if (isset($this->readListeners[$key])) {
                 \call_user_func($this->readListeners[$key], $stream);
             }
@@ -247,7 +297,6 @@ final class StreamSelectLoop implements LoopInterface
 
         foreach ($write as $stream) {
             $key = (int) $stream;
-
             if (isset($this->writeListeners[$key])) {
                 \call_user_func($this->writeListeners[$key], $stream);
             }
@@ -272,6 +321,25 @@ final class StreamSelectLoop implements LoopInterface
 
             // suppress warnings that occur, when stream_select is interrupted by a signal
             return @\stream_select($read, $write, $except, $timeout === null ? null : 0, $timeout);
+        }
+
+        if ($timeout > 0) {
+            \usleep($timeout);
+        } elseif ($timeout === null) {
+            // wait forever (we only reach this if we're only awaiting signals)
+            // this may be interrupted and return earlier when a signal is received
+            \sleep(PHP_INT_MAX);
+        }
+
+        return 0;
+    }
+	
+	private function socketSelect(array &$read, array &$write, $timeout)
+    {
+        if ($read || $write) {
+            $except = null;
+            // suppress warnings that occur, when stream_select is interrupted by a signal
+            return @\socket_select($read, $write, $except, $timeout === null ? null : 0, $timeout);
         }
 
         if ($timeout > 0) {

@@ -117,7 +117,7 @@ final class Connector implements ConnectorInterface
         }
     }
 
-    public function connect($uri)
+    public function connect($uri, $unixType = "stream", $forceSocket = false)
     {
         $scheme = 'tcp';
         if (\strpos($uri, '://') !== false) {
@@ -130,7 +130,7 @@ final class Connector implements ConnectorInterface
             ));
         }
 
-        return $this->connectors[$scheme]->connect($uri);
+        return $this->connectors[$scheme]->connect($uri, $unixType, $forceSocket);
     }
 }
 

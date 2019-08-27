@@ -7,7 +7,7 @@
          convertWarningsToExceptions="true"
 >
     <testsuites>
-        <testsuite name="PromiseStream Test Suite">
+        <testsuite>
             <directory>./tests/</directory>
         </testsuite>
     </testsuites>

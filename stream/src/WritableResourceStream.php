@@ -11,29 +11,39 @@ final class WritableResourceStream extends EventEmitter implements WritableStrea
     private $loop;
     private $softLimit;
     private $writeChunkSize;
+	private $wrtBytesLen;
+    private $socketSystem;
 
     private $listening = false;
     private $writable = true;
     private $closed = false;
     private $data = '';
 
-    public function __construct($stream, LoopInterface $loop, $writeBufferSoftLimit = null, $writeChunkSize = null)
+    public function __construct($stream, LoopInterface $loop, $writeBufferSoftLimit = null, $writeChunkSize = null, $socketSystem = false)
     {
-        if (!\is_resource($stream) || \get_resource_type($stream) !== "stream") {
+        if (!\is_resource($stream) || ((\get_resource_type($stream) === "Socket") AND !$socketSystem)) {
             throw new \InvalidArgumentException('First parameter must be a valid stream resource');
         }
 
-        // ensure resource is opened for writing (fopen mode must contain either of "waxc+")
-        $meta = \stream_get_meta_data($stream);
-        if (isset($meta['mode']) && $meta['mode'] !== '' && \strtr($meta['mode'], 'waxc+', '.....') === $meta['mode']) {
-            throw new \InvalidArgumentException('Given stream resource is not opened in write mode');
-        }
+		if($socketSystem){
+			if (\socket_set_nonblock($stream) !== true) {
+				throw new \RuntimeException('Unable to set socket resource to non-blocking mode');
+			}
+		} else {
+			// ensure resource is opened for writing (fopen mode must contain either of "waxc+")
+			$meta = \stream_get_meta_data($stream);
+			if (isset($meta['mode']) && $meta['mode'] !== '' && \strtr($meta['mode'], 'waxc+', '.....') === $meta['mode']) {
+				throw new \InvalidArgumentException('Given stream resource is not opened in write mode');
+			}
 
-        // this class relies on non-blocking I/O in order to not interrupt the event loop
-        // e.g. pipes on Windows do not support this: https://bugs.php.net/bug.php?id=47918
-        if (\stream_set_blocking($stream, 0) !== true) {
-            throw new \RuntimeException('Unable to set stream resource to non-blocking mode');
-        }
+			// this class relies on non-blocking I/O in order to not interrupt the event loop
+			// e.g. pipes on Windows do not support this: https://bugs.php.net/bug.php?id=47918
+			if (\stream_set_blocking($stream, 0) !== true) {
+				throw new \RuntimeException('Unable to set stream resource to non-blocking mode');
+			}
+		}
+		
+		$this->socketSystem = $socketSystem;
 
         $this->stream = $stream;
         $this->loop = $loop;
@@ -46,8 +56,17 @@ final class WritableResourceStream extends EventEmitter implements WritableStrea
         return $this->writable;
     }
 
-    public function write($data)
+    public function write($data, $ip = null, $port = null)
     {
+		if($this->socketSystem && null !== $ip){
+			if(null !== $port){
+				$this->wrtBytesLen = socket_sendto($this->stream, $data, strlen($data), 0, $ip, $port);
+			} else {
+				$this->wrtBytesLen = socket_sendto($this->stream, $data, strlen($data), 0, $ip);
+				return $this->wrtBytesLen;
+			}
+		}
+		
         if (!$this->writable) {
             return false;
         }
@@ -56,8 +75,11 @@ final class WritableResourceStream extends EventEmitter implements WritableStrea
 
         if (!$this->listening && $this->data !== '') {
             $this->listening = true;
-
-            $this->loop->addWriteStream($this->stream, array($this, 'handleWrite'));
+			if($this->socketSystem){
+				$this->loop->addWriteSocket($this->stream, array($this, 'handleWrite'));
+			} else {
+				$this->loop->addWriteStream($this->stream, array($this, 'handleWrite'));
+			}
         }
 
         return !isset($this->data[$this->softLimit - 1]);
@@ -86,7 +108,11 @@ final class WritableResourceStream extends EventEmitter implements WritableStrea
 
         if ($this->listening) {
             $this->listening = false;
-            $this->loop->removeWriteStream($this->stream);
+			if($this->socketSystem){
+				$this->loop->removeWriteSocket($this->stream);
+			} else {
+				$this->loop->removeWriteStream($this->stream);
+			}
         }
 
         $this->closed = true;
@@ -97,7 +123,12 @@ final class WritableResourceStream extends EventEmitter implements WritableStrea
         $this->removeAllListeners();
 
         if (\is_resource($this->stream)) {
-            \fclose($this->stream);
+			if($this->socketSystem){
+				\socket_close($this->stream);
+			} else {
+				\fclose($this->stream);
+			}
+            
         }
     }
 
@@ -113,12 +144,17 @@ final class WritableResourceStream extends EventEmitter implements WritableStrea
                 'line' => $errline
             );
         });
-
-        if ($this->writeChunkSize === -1) {
-            $sent = \fwrite($this->stream, $this->data);
-        } else {
-            $sent = \fwrite($this->stream, $this->data, $this->writeChunkSize);
-        }
+		
+		
+		if($this->socketSystem){
+			$sent = socket_write($this->stream, $this->data, strlen($this->data));
+		} else {
+			if ($this->writeChunkSize === -1) {
+				$sent = \fwrite($this->stream, $this->data);
+			} else {
+				$sent = \fwrite($this->stream, $this->data, $this->writeChunkSize);
+			}
+		}
 
         \restore_error_handler();
 
@@ -139,8 +175,12 @@ final class WritableResourceStream extends EventEmitter implements WritableStrea
                     $error['line']
                 );
             }
-
-            $this->emit('error', array(new \RuntimeException('Unable to write to stream: ' . ($error !== null ? $error->getMessage() : 'Unknown error'), 0, $error)));
+			
+			if($this->socketSystem){
+				$this->emit('error', array(new \RuntimeException('Unable to write to socket: ' . ($error !== null ? $error->getMessage() : 'Unknown error'), 0, $error)));
+            } else {
+				$this->emit('error', array(new \RuntimeException('Unable to write to stream: ' . ($error !== null ? $error->getMessage() : 'Unknown error'), 0, $error)));
+            }
             $this->close();
 
             return;
@@ -158,7 +198,11 @@ final class WritableResourceStream extends EventEmitter implements WritableStrea
         if ($this->data === '') {
             // stop waiting for resource to be writable
             if ($this->listening) {
-                $this->loop->removeWriteStream($this->stream);
+				if($this->socketSystem){
+					$this->loop->removeWriteSocket($this->stream);
+				} else {
+					$this->loop->removeWriteStream($this->stream);
+				}
                 $this->listening = false;
             }
 

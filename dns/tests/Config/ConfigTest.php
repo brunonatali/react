@@ -99,11 +99,7 @@ NameServer 7.8.9.10
     public function testLoadsFromWmicOnWindows()
     {
         if (DIRECTORY_SEPARATOR !== '\\') {
-            // WMIC is Windows-only tool and not supported on other platforms
-            // Unix is our main platform, so we don't want to report a skipped test here (yellow)
-            // $this->markTestSkipped('Only on Windows');
-            $this->expectOutputString('');
-            return;
+            $this->markTestSkipped('Only on Windows');
         }
 
         $config = Config::loadWmicBlocking();

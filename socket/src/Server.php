@@ -10,7 +10,7 @@ final class Server extends EventEmitter implements ServerInterface
 {
     private $server;
 
-    public function __construct($uri, LoopInterface $loop, array $context = array())
+    public function __construct($uri, LoopInterface $loop, array $context = array(), string $unixType = "stream", $forceSocket = false)
     {
         // sanitize TCP context options if not properly wrapped
         if ($context && (!isset($context['tcp']) && !isset($context['tls']) && !isset($context['unix']))) {
@@ -31,7 +31,7 @@ final class Server extends EventEmitter implements ServerInterface
         }
 
         if ($scheme === 'unix') {
-            $server = new UnixServer($uri, $loop, $context['unix']);
+				$server = new UnixServer($uri, $loop, $context['unix'], $unixType, $forceSocket);
         } else {
             $server = new TcpServer(str_replace('tls://', '', $uri), $loop, $context['tcp']);
 

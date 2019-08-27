@@ -31,7 +31,7 @@ class UnwrapReadableStream extends EventEmitter implements ReadableStreamInterfa
 
         $this->promise = $promise->then(
             function ($stream) {
-                if (!$stream instanceof ReadableStreamInterface) {
+                if (!($stream instanceof ReadableStreamInterface)) {
                     throw new InvalidArgumentException('Not a readable stream');
                 }
                 return $stream;
@@ -80,9 +80,6 @@ class UnwrapReadableStream extends EventEmitter implements ReadableStreamInterfa
                     $out->emit('error', array($e, $out));
                     $out->close();
                 }
-
-                // resume() and pause() may attach to this promise, so ensure we actually reject here
-                throw $e;
             }
         );
     }
@@ -94,20 +91,16 @@ class UnwrapReadableStream extends EventEmitter implements ReadableStreamInterfa
 
     public function pause()
     {
-        if ($this->promise !== null) {
-            $this->promise->then(function (ReadableStreamInterface $stream) {
-                $stream->pause();
-            });
-        }
+        $this->promise->then(function (ReadableStreamInterface $stream) {
+            $stream->pause();
+        });
     }
 
     public function resume()
     {
-        if ($this->promise !== null) {
-            $this->promise->then(function (ReadableStreamInterface $stream) {
-                $stream->resume();
-            });
-        }
+        $this->promise->then(function (ReadableStreamInterface $stream) {
+            $stream->resume();
+        });
     }
 
     public function pipe(WritableStreamInterface $dest, array $options = array())
@@ -129,9 +122,7 @@ class UnwrapReadableStream extends EventEmitter implements ReadableStreamInterfa
         if ($this->promise instanceof CancellablePromiseInterface) {
             $this->promise->cancel();
         }
-        $this->promise = null;
 
-        $this->emit('close');
-        $this->removeAllListeners();
+        $this->emit('close', array($this));
     }
 }
